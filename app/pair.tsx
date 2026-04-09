@@ -57,6 +57,7 @@ export default function PairScreen() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.meta?.message ?? "Pairing failed");
+
       setPairing(sessionId, serverUrl, data.data.scannerToken);
       router.replace("/scan");
     } catch (err: any) {

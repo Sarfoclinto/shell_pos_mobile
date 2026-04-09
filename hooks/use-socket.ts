@@ -30,7 +30,7 @@ export const useSocket = () => {
 
     socketRef.current = socket;
 
-    socket.on("connected", () => setStatus("connected"));
+    socket.on("connect", () => setStatus("connected"));
     socket.on("disconnect", () => setStatus("disconnected"));
     socket.on("connect_error", () => setStatus("error"));
 

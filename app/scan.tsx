@@ -1,5 +1,7 @@
-import { CameraView } from "expo-camera";
+import { ScanAckData } from "@/types/api";
+import { BarcodeScanningResult, CameraView } from "expo-camera";
 import * as Haptics from "expo-haptics";
+import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -14,19 +16,22 @@ import { useScannerStore } from "../store/scanner.store";
 
 const DEBOUNCE_MS = 1500; // prevent scanning the same barcode twice in quick succession
 
-export default function ScanScreen({ navigation }: any) {
+export default function ScanScreen() {
   const {
     sessionId,
     serverUrl,
     scannerToken,
     status,
     setStatus,
+    scanMode,
+    setScanMode,
     clearPairing,
     setLastAck,
   } = useScannerStore();
   const socketRef = useRef<Socket | null>(null);
   const lastScannedRef = useRef<string | null>(null);
   const lastScannedTimeRef = useRef<number>(0);
+  const router = useRouter();
 
   const [scanResult, setScanResult] = useState<{
     barcode: string;
@@ -40,7 +45,8 @@ export default function ScanScreen({ navigation }: any) {
   // ── Connect socket ──
   useEffect(() => {
     if (!sessionId || !serverUrl || !scannerToken) {
-      navigation.replace("Home");
+      // clearPairing();
+      router.replace("/");
       return;
     }
 
@@ -56,55 +62,54 @@ export default function ScanScreen({ navigation }: any) {
     socket.on("connect_error", () => setStatus("error"));
 
     // Product ack from server
-    socket.on(
-      "scanner:ack",
-      (data: {
-        productName: string;
-        qty: number;
-        success: boolean;
-        error?: string;
-      }) => {
-        if (data.success) {
-          setLastAck({ productName: data.productName, qty: data.qty });
+    socket.on("scanner:ack", (data: ScanAckData) => {
+      if (data && data.received) {
+        if (data.product) {
+          setLastAck({
+            productName: data.product.name,
+            qty: data.product.stockQuantity || 0,
+          });
           setScanResult((prev) =>
             prev
               ? {
                   ...prev,
                   status: "success",
-                  message: `✓ ${data.productName} added to cart`,
+                  message: `✓ ${data?.product?.name} added to cart`,
                 }
               : null,
           );
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         } else {
-          setScanResult((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  status: "error",
-                  message: data.error ?? "Product not found",
-                }
-              : null,
-          );
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          if (data.mode === "add-to-cart") {
+            setScanResult((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    status: "error",
+                    message: data.error ?? "Product not found",
+                  }
+                : null,
+            );
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+          }
         }
-        // Flash overlay
-        Animated.sequence([
-          Animated.timing(flashAnim, {
-            toValue: 1,
-            duration: 100,
-            useNativeDriver: true,
-          }),
-          Animated.timing(flashAnim, {
-            toValue: 0,
-            duration: 300,
-            useNativeDriver: true,
-          }),
-        ]).start();
-        // Clear after 2s
-        setTimeout(() => setScanResult(null), 2000);
-      },
-    );
+      }
+      // Flash overlay
+      Animated.sequence([
+        Animated.timing(flashAnim, {
+          toValue: 1,
+          duration: 100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(flashAnim, {
+          toValue: 0,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+      ]).start();
+      // Clear after 2s
+      setTimeout(() => setScanResult(null), 2000);
+    });
 
     // POS disconnected
     socket.on("scanner:pos-disconnected", () => {
@@ -119,7 +124,7 @@ export default function ScanScreen({ navigation }: any) {
     // Session expired
     socket.on("scanner:session-expired", () => {
       clearPairing();
-      navigation.replace("Home");
+      router.replace("/");
     });
 
     return () => {
@@ -129,7 +134,7 @@ export default function ScanScreen({ navigation }: any) {
   }, [
     clearPairing,
     flashAnim,
-    navigation,
+    router,
     scannerToken,
     serverUrl,
     sessionId,
@@ -139,8 +144,10 @@ export default function ScanScreen({ navigation }: any) {
 
   // ── Handle barcode scan ──
   const handleBarcodeScan = useCallback(
-    ({ type, data }: { type: string; data: string }) => {
+    (result: BarcodeScanningResult) => {
       const now = Date.now();
+      const { data, type } = result;
+
       // Debounce: ignore same barcode within 1.5s
       if (
         data === lastScannedRef.current &&
@@ -165,9 +172,10 @@ export default function ScanScreen({ navigation }: any) {
         barcode: data,
         type,
         sessionId,
+        mode: scanMode,
       });
     },
-    [sessionId],
+    [sessionId, scanMode],
   );
 
   const isConnected = status === "connected";
@@ -198,10 +206,7 @@ export default function ScanScreen({ navigation }: any) {
         </View>
       </View>
       <SafeAreaView style={styles.topBar}>
-        <TouchableOpacity
-          onPress={() => navigation.goBack()}
-          style={styles.backBtn}
-        >
+        <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backBtnText}>←</Text>
         </TouchableOpacity>
         <View style={styles.connectionChip}>
@@ -246,11 +251,49 @@ export default function ScanScreen({ navigation }: any) {
             </View>
           </View>
         ) : (
-          <Text style={styles.hint}>
-            {isConnected
-              ? "Point at any barcode to add it to the POS cart"
-              : "Connecting to POS..."}
-          </Text>
+          <>
+            <Text style={styles.hint}>
+              {isConnected
+                ? `Mode: ${scanMode === "add-to-cart" ? "Add to Cart" : "Regular Scan"}`
+                : "Connecting to POS..."}
+            </Text>
+            {isConnected && (
+              <View style={styles.modeSelector}>
+                <TouchableOpacity
+                  style={[
+                    styles.modeButton,
+                    scanMode === "regular" && styles.modeButtonActive,
+                  ]}
+                  onPress={() => setScanMode("regular")}
+                >
+                  <Text
+                    style={[
+                      styles.modeButtonText,
+                      scanMode === "regular" && styles.modeButtonTextActive,
+                    ]}
+                  >
+                    Regular Scan
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.modeButton,
+                    scanMode === "add-to-cart" && styles.modeButtonActive,
+                  ]}
+                  onPress={() => setScanMode("add-to-cart")}
+                >
+                  <Text
+                    style={[
+                      styles.modeButtonText,
+                      scanMode === "add-to-cart" && styles.modeButtonTextActive,
+                    ]}
+                  >
+                    Add to Cart
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </>
         )}
       </View>
     </View>
@@ -367,5 +410,33 @@ const styles = StyleSheet.create({
     color: "#94a3b8",
     fontFamily: "monospace",
     marginTop: 2,
+  },
+  modeSelector: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 16,
+    width: "100%",
+  },
+  modeButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+    alignItems: "center",
+  },
+  modeButtonActive: {
+    borderColor: "#C9A84C",
+    backgroundColor: "rgba(201,168,76,0.1)",
+  },
+  modeButtonText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#64748b",
+  },
+  modeButtonTextActive: {
+    color: "#C9A84C",
   },
 });

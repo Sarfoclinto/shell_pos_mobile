@@ -8,6 +8,8 @@ export type ConnectionStatus =
   | "connected"
   | "error";
 
+export type ScanMode = "regular" | "add-to-cart";
+
 interface ScannerState {
   // Hydration state
   isHydrated: boolean;
@@ -20,6 +22,9 @@ interface ScannerState {
   // Connection
   status: ConnectionStatus;
 
+  // Scan mode
+  scanMode: ScanMode;
+
   // Last ack from server
   lastAck: { productName: string; qty: number } | null;
 
@@ -30,6 +35,7 @@ interface ScannerState {
     scannerToken: string,
   ) => void;
   setStatus: (s: ConnectionStatus) => void;
+  setScanMode: (mode: ScanMode) => void;
   setLastAck: (ack: { productName: string; qty: number } | null) => void;
   clearPairing: () => void;
   setHasHydrated: (state: boolean) => void;
@@ -45,6 +51,7 @@ export const useScannerStore = create<ScannerState>()(
       serverUrl: null,
       scannerToken: null,
       status: "disconnected",
+      scanMode: "regular",
       lastAck: null,
 
       setPairing: (sessionId, serverUrl, scannerToken) => {
@@ -52,6 +59,7 @@ export const useScannerStore = create<ScannerState>()(
       },
 
       setStatus: (status) => set({ status }),
+      setScanMode: (scanMode) => set({ scanMode }),
       setLastAck: (lastAck) => set({ lastAck }),
 
       clearPairing: () => {
