@@ -1,4 +1,5 @@
 import { ScanAckData } from "@/types/api";
+import { useAudioPlayer } from "expo-audio";
 import { BarcodeScanningResult, CameraView } from "expo-camera";
 import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
@@ -30,6 +31,7 @@ export default function ScanScreen() {
     audioEnabled,
     setAudioEnabled,
     scanCount,
+    scanHistory,
     addScanHistory,
     clearPairing,
     setLastAck,
@@ -41,6 +43,11 @@ export default function ScanScreen() {
   const clearTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
   const router = useRouter();
 
+  // Audio players
+  const scanPlayer = useAudioPlayer(require("@/assets/audio/scan.mp3"));
+  const successPlayer = useAudioPlayer(require("@/assets/audio/success.mp3"));
+  const errorPlayer = useAudioPlayer(require("@/assets/audio/error.mp3"));
+
   const [scanResult, setScanResult] = useState<{
     barcode: string;
     type: string;
@@ -50,6 +57,13 @@ export default function ScanScreen() {
 
   const flashAnim = useRef(new Animated.Value(0)).current;
 
+  // Set audio volume
+  useEffect(() => {
+    scanPlayer.volume = 0.7;
+    successPlayer.volume = 0.7;
+    errorPlayer.volume = 0.7;
+  }, [scanPlayer, successPlayer, errorPlayer]);
+
   // ── Connect socket ──
   useEffect(() => {
     if (!sessionId || !serverUrl || !scannerToken) {
@@ -57,6 +71,9 @@ export default function ScanScreen() {
       router.replace("/");
       return;
     }
+
+    // Initialize audio on mount
+    // setupAudio().catch(console.error);
 
     const socket = io(serverUrl, {
       auth: { token: scannerToken, role: "scanner", sessionId },
@@ -95,6 +112,11 @@ export default function ScanScreen() {
                 }
               : null,
           );
+          // Play success sound
+          if (audioEnabled) {
+            // successPlayer.currentTime = 0;
+            successPlayer.play();
+          }
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           // Keep success notification for 5 seconds
           if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
@@ -119,6 +141,11 @@ export default function ScanScreen() {
                   }
                 : null,
             );
+            // Play error sound
+            if (audioEnabled) {
+              // errorPlayer.currentTime = 0;
+              errorPlayer.play();
+            }
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
             // Keep error notification for 4 seconds
             if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
@@ -167,7 +194,9 @@ export default function ScanScreen() {
     };
   }, [
     addScanHistory,
+    audioEnabled,
     clearPairing,
+    errorPlayer,
     flashAnim,
     router,
     scannerToken,
@@ -175,6 +204,7 @@ export default function ScanScreen() {
     sessionId,
     setLastAck,
     setStatus,
+    successPlayer,
   ]);
 
   // ── Handle barcode scan ──
@@ -198,6 +228,11 @@ export default function ScanScreen() {
       lastScannedRef.current = data;
       lastScannedTimeRef.current = now;
 
+      // Play scan sound
+      if (audioEnabled) {
+        // scanPlayer.currentTime = 0;
+        scanPlayer.play();
+      }
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
 
       setScanResult({
@@ -219,7 +254,7 @@ export default function ScanScreen() {
         isProcessingRef.current = false;
       }, 2000);
     },
-    [sessionId, scanMode],
+    [audioEnabled, scanMode, scanPlayer, sessionId],
   );
 
   const isConnected = status === "connected";
@@ -228,6 +263,12 @@ export default function ScanScreen() {
     if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
     setScanResult(null);
   }, []);
+
+  // Calculate statistics
+  const successCount = scanHistory.filter((s) => s.status === "success").length;
+  const errorCount = scanHistory.filter((s) => s.status === "error").length;
+  const successRate =
+    scanCount > 0 ? Math.round((successCount / scanCount) * 100) : 0;
 
   return (
     <View style={styles.container}>
@@ -275,7 +316,9 @@ export default function ScanScreen() {
             onPress={() => setAudioEnabled(!audioEnabled)}
             style={styles.audioToggle}
             accessible={true}
-            accessibilityLabel={audioEnabled ? "Audio enabled" : "Audio disabled"}
+            accessibilityLabel={
+              audioEnabled ? "Audio enabled" : "Audio disabled"
+            }
             accessibilityRole="switch"
           >
             <Text style={styles.audioToggleText}>
@@ -283,8 +326,16 @@ export default function ScanScreen() {
             </Text>
           </TouchableOpacity>
           {isConnected && (
-            <TouchableOpacity style={styles.scanCountBadge}>
-              <Text style={styles.scanCountText}>{Math.min(99, scanCount)}</Text>
+            <TouchableOpacity
+              style={styles.scanCountBadge}
+              onPress={() => router.push("/history")}
+              accessible={true}
+              accessibilityLabel={`${scanCount} scans, tap to view history`}
+              accessibilityRole="button"
+            >
+              <Text style={styles.scanCountText}>
+                {Math.min(99, scanCount)}
+              </Text>
             </TouchableOpacity>
           )}
         </View>
@@ -352,6 +403,41 @@ export default function ScanScreen() {
                 ? `Mode: ${scanMode === "add-to-cart" ? "Add to Cart" : "Regular Scan"}`
                 : "Connecting to POS..."}
             </Text>
+
+            {/* Statistics Card */}
+            {isConnected && scanCount > 0 && (
+              <View style={styles.statsWidget}>
+                <View style={styles.statsPairItem}>
+                  <Text style={styles.statsLabel}>Success Rate</Text>
+                  <Text
+                    style={[
+                      styles.statsValue,
+                      { color: successRate >= 80 ? "#10b981" : "#C9A84C" },
+                    ]}
+                  >
+                    {successRate}%
+                  </Text>
+                </View>
+                <View style={styles.statsBarrier} />
+                <View style={styles.statsPairItem}>
+                  <Text style={styles.statsLabel}>Scans</Text>
+                  <Text style={styles.statsValue}>{scanCount}</Text>
+                </View>
+                <View style={styles.statsBarrier} />
+                <View style={styles.statsPairItem}>
+                  <Text style={styles.statsLabel}>Errors</Text>
+                  <Text
+                    style={[
+                      styles.statsValue,
+                      { color: errorCount > 0 ? "#ef4444" : "#10b981" },
+                    ]}
+                  >
+                    {errorCount}
+                  </Text>
+                </View>
+              </View>
+            )}
+
             {isConnected && (
               <View style={styles.modeSelector}>
                 <TouchableOpacity
@@ -618,5 +704,35 @@ const styles = StyleSheet.create({
   },
   modeButtonTextActive: {
     color: "#C9A84C",
+  },
+  statsWidget: {
+    flexDirection: "row",
+    marginTop: 14,
+    marginBottom: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  statsPairItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  statsBarrier: {
+    width: 1,
+    backgroundColor: "#e2e8f0",
+  },
+  statsLabel: {
+    fontSize: 11,
+    color: "#94a3b8",
+    fontWeight: "500",
+    marginBottom: 4,
+  },
+  statsValue: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#0D1B2E",
   },
 });
