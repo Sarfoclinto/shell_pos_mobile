@@ -5,13 +5,13 @@ import React, { useCallback, useState } from "react";
 import {
   Alert,
   FlatList,
-  SafeAreaView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function HistoryScreen() {
   const router = useRouter();
@@ -37,25 +37,6 @@ export default function HistoryScreen() {
   const successRate =
     scanCount > 0 ? Math.round((successCount / scanCount) * 100) : 0;
 
-  const handleDeleteItem = useCallback((barcode: string) => {
-    // Since we don't have direct delete in store, we could:
-    // 1. Clear and re-add all except deleted
-    // 2. Or just show they need to clear all
-    // For now, show a message
-    Alert.alert(
-      "Delete Item",
-      "Individual delete not yet supported.\nClear all instead?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Clear All",
-          style: "destructive",
-          onPress: handleClearAll,
-        },
-      ],
-    );
-  }, []);
-
   const handleClearAll = useCallback(() => {
     const confirmMessage = `Clear all ${scanCount} scans from history?`;
 
@@ -72,6 +53,28 @@ export default function HistoryScreen() {
       },
     ]);
   }, [scanCount, clearScanHistory]);
+
+  const handleDeleteItem = useCallback(
+    (barcode: string) => {
+      // Since we don't have direct delete in store, we could:
+      // 1. Clear and re-add all except deleted
+      // 2. Or just show they need to clear all
+      // For now, show a message
+      Alert.alert(
+        "Delete Item",
+        "Individual delete not yet supported.\nClear all instead?",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Clear All",
+            style: "destructive",
+            onPress: handleClearAll,
+          },
+        ],
+      );
+    },
+    [handleClearAll],
+  );
 
   const handleSelectItem = (barcode: string) => {
     if (!isSelectionMode) {
