@@ -4,9 +4,9 @@ on:
   push:
     branches: ["master"]
 
-  jobs:
-    build_android:
-      type: build
-      params:
-        platform: android
-        profile: production
+jobs:
+  build_android:
+    type: build
+    params:
+      platform: android
+      profile: production
