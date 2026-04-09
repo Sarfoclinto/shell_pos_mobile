@@ -14,7 +14,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { io, Socket } from "socket.io-client";
 import { useScannerStore } from "../store/scanner.store";
 
-const DEBOUNCE_MS = 1500; // prevent scanning the same barcode twice in quick succession
+const DEBOUNCE_MS = 3000; // increased from 1500ms for better scanning UX
+const RESULT_CLEAR_TIMEOUT_SUCCESS = 5000; // success notification stays 5 seconds
+const RESULT_CLEAR_TIMEOUT_ERROR = 4000; // error notification stays 4 seconds
 
 export default function ScanScreen() {
   const {
@@ -25,12 +27,18 @@ export default function ScanScreen() {
     setStatus,
     scanMode,
     setScanMode,
+    audioEnabled,
+    setAudioEnabled,
+    scanCount,
+    addScanHistory,
     clearPairing,
     setLastAck,
   } = useScannerStore();
   const socketRef = useRef<Socket | null>(null);
   const lastScannedRef = useRef<string | null>(null);
   const lastScannedTimeRef = useRef<number>(0);
+  const isProcessingRef = useRef<boolean>(false);
+  const clearTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
   const router = useRouter();
 
   const [scanResult, setScanResult] = useState<{
@@ -63,11 +71,20 @@ export default function ScanScreen() {
 
     // Product ack from server
     socket.on("scanner:ack", (data: ScanAckData) => {
+      isProcessingRef.current = false;
+
       if (data && data.received) {
         if (data.product) {
           setLastAck({
             productName: data.product.name,
             qty: data.product.stockQuantity || 0,
+          });
+          // Add to scan history
+          addScanHistory({
+            barcode: lastScannedRef.current || "",
+            timestamp: Date.now(),
+            status: "success",
+            productName: data.product.name,
           });
           setScanResult((prev) =>
             prev
@@ -79,8 +96,20 @@ export default function ScanScreen() {
               : null,
           );
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          // Keep success notification for 5 seconds
+          if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
+          clearTimeoutRef.current = setTimeout(
+            () => setScanResult(null),
+            RESULT_CLEAR_TIMEOUT_SUCCESS,
+          );
         } else {
           if (data.mode === "add-to-cart") {
+            // Add to scan history as error
+            addScanHistory({
+              barcode: lastScannedRef.current || "",
+              timestamp: Date.now(),
+              status: "error",
+            });
             setScanResult((prev) =>
               prev
                 ? {
@@ -91,6 +120,12 @@ export default function ScanScreen() {
                 : null,
             );
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+            // Keep error notification for 4 seconds
+            if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
+            clearTimeoutRef.current = setTimeout(
+              () => setScanResult(null),
+              RESULT_CLEAR_TIMEOUT_ERROR,
+            );
           }
         }
       }
@@ -107,8 +142,6 @@ export default function ScanScreen() {
           useNativeDriver: true,
         }),
       ]).start();
-      // Clear after 2s
-      setTimeout(() => setScanResult(null), 2000);
     });
 
     // POS disconnected
@@ -130,8 +163,10 @@ export default function ScanScreen() {
     return () => {
       socket.emit("scanner:disconnect-request", { sessionId });
       socket.disconnect();
+      if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
     };
   }, [
+    addScanHistory,
     clearPairing,
     flashAnim,
     router,
@@ -145,10 +180,13 @@ export default function ScanScreen() {
   // ── Handle barcode scan ──
   const handleBarcodeScan = useCallback(
     (result: BarcodeScanningResult) => {
+      // Prevent overlapping scans
+      if (isProcessingRef.current) return;
+
       const now = Date.now();
       const { data, type } = result;
 
-      // Debounce: ignore same barcode within 1.5s
+      // Debounce: ignore same barcode within 3 seconds
       if (
         data === lastScannedRef.current &&
         now - lastScannedTimeRef.current < DEBOUNCE_MS
@@ -156,6 +194,7 @@ export default function ScanScreen() {
         return;
       if (!socketRef.current?.connected) return;
 
+      isProcessingRef.current = true;
       lastScannedRef.current = data;
       lastScannedTimeRef.current = now;
 
@@ -174,11 +213,21 @@ export default function ScanScreen() {
         sessionId,
         mode: scanMode,
       });
+
+      // Reset processing flag after timeout (safety net)
+      setTimeout(() => {
+        isProcessingRef.current = false;
+      }, 2000);
     },
     [sessionId, scanMode],
   );
 
   const isConnected = status === "connected";
+
+  const handleCloseScanResult = useCallback(() => {
+    if (clearTimeoutRef.current) clearTimeout(clearTimeoutRef.current);
+    setScanResult(null);
+  }, []);
 
   return (
     <View style={styles.container}>
@@ -204,6 +253,7 @@ export default function ScanScreen() {
             <View key={idx} style={corner} />
           ))}
         </View>
+        <Text style={styles.scanHint}>Center barcode in frame</Text>
       </View>
       <SafeAreaView style={styles.topBar}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
@@ -220,36 +270,81 @@ export default function ScanScreen() {
             {isConnected ? "POS Connected" : "Reconnecting..."}
           </Text>
         </View>
+        <View style={styles.topRightSection}>
+          <TouchableOpacity
+            onPress={() => setAudioEnabled(!audioEnabled)}
+            style={styles.audioToggle}
+            accessible={true}
+            accessibilityLabel={audioEnabled ? "Audio enabled" : "Audio disabled"}
+            accessibilityRole="switch"
+          >
+            <Text style={styles.audioToggleText}>
+              {audioEnabled ? "🔊" : "🔇"}
+            </Text>
+          </TouchableOpacity>
+          {isConnected && (
+            <TouchableOpacity style={styles.scanCountBadge}>
+              <Text style={styles.scanCountText}>{Math.min(99, scanCount)}</Text>
+            </TouchableOpacity>
+          )}
+        </View>
       </SafeAreaView>
       <View style={styles.bottomCard}>
         {scanResult ? (
-          <View
-            style={[
-              styles.resultRow,
-              {
-                backgroundColor:
-                  scanResult.status === "success"
-                    ? "rgba(16,185,129,0.12)"
-                    : scanResult.status === "error"
-                      ? "rgba(239,68,68,0.1)"
-                      : "rgba(201,168,76,0.1)",
-              },
-            ]}
-          >
-            <Text style={[styles.resultIcon]}>
-              {scanResult.status === "success"
-                ? "✓"
-                : scanResult.status === "error"
-                  ? "✗"
-                  : "⏳"}
-            </Text>
-            <View>
-              <Text style={styles.resultMessage}>{scanResult.message}</Text>
-              {scanResult.barcode && (
-                <Text style={styles.resultBarcode}>{scanResult.barcode}</Text>
+          <>
+            <View
+              style={[
+                styles.resultRow,
+                {
+                  backgroundColor:
+                    scanResult.status === "success"
+                      ? "rgba(16,185,129,0.12)"
+                      : scanResult.status === "error"
+                        ? "rgba(239,68,68,0.1)"
+                        : "rgba(201,168,76,0.1)",
+                },
+              ]}
+            >
+              <Text style={[styles.resultIcon]}>
+                {scanResult.status === "success"
+                  ? "✓"
+                  : scanResult.status === "error"
+                    ? "✗"
+                    : "⏳"}
+              </Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.resultMessage}>{scanResult.message}</Text>
+                {scanResult.barcode && (
+                  <Text style={styles.resultBarcode}>{scanResult.barcode}</Text>
+                )}
+              </View>
+              {scanResult.status === "success" && (
+                <TouchableOpacity
+                  onPress={handleCloseScanResult}
+                  style={styles.closeButton}
+                  accessible={true}
+                  accessibilityLabel="Close notification"
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.closeButtonText}>✕</Text>
+                </TouchableOpacity>
               )}
             </View>
-          </View>
+            {scanResult.status === "error" && (
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => {
+                  handleCloseScanResult();
+                  // User can re-scan
+                }}
+                accessible={true}
+                accessibilityLabel="Close error"
+                accessibilityRole="button"
+              >
+                <Text style={styles.retryButtonText}>Dismiss</Text>
+              </TouchableOpacity>
+            )}
+          </>
         ) : (
           <>
             <Text style={styles.hint}>
@@ -265,7 +360,12 @@ export default function ScanScreen() {
                     scanMode === "regular" && styles.modeButtonActive,
                   ]}
                   onPress={() => setScanMode("regular")}
+                  accessible={true}
+                  accessibilityLabel="Regular scan mode"
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: scanMode === "regular" }}
                 >
+                  <Text style={styles.modeButtonIcon}>📱</Text>
                   <Text
                     style={[
                       styles.modeButtonText,
@@ -281,7 +381,12 @@ export default function ScanScreen() {
                     scanMode === "add-to-cart" && styles.modeButtonActive,
                   ]}
                   onPress={() => setScanMode("add-to-cart")}
+                  accessible={true}
+                  accessibilityLabel="Add to cart mode"
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected: scanMode === "add-to-cart" }}
                 >
+                  <Text style={styles.modeButtonIcon}>🛒</Text>
                   <Text
                     style={[
                       styles.modeButtonText,
@@ -311,7 +416,14 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(0,0,0,0.65)", // darker overlay (was 0.45)
+  },
+  scanHint: {
+    position: "absolute",
+    bottom: 100,
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "500",
   },
   scanWindow: {
     width: 260,
@@ -383,6 +495,34 @@ const styles = StyleSheet.create({
   },
   dot: { width: 7, height: 7, borderRadius: 4 },
   connectionText: { color: "#fff", fontSize: 12, fontWeight: "600" },
+  topRightSection: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  audioToggle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,0,0,0.4)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  audioToggleText: { fontSize: 16 },
+  scanCountBadge: {
+    backgroundColor: "#C9A84C",
+    borderRadius: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    minWidth: 28,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  scanCountText: {
+    color: "#000",
+    fontSize: 12,
+    fontWeight: "700",
+  },
   bottomCard: {
     position: "absolute",
     bottom: 0,
@@ -393,6 +533,11 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     padding: 24,
     alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
   },
   hint: { fontSize: 13, color: "#64748b", textAlign: "center" },
   resultRow: {
@@ -402,6 +547,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     width: "100%",
+    position: "relative",
   },
   resultIcon: { fontSize: 22, fontWeight: "700" },
   resultMessage: { fontSize: 14, fontWeight: "700", color: "#0D1B2E" },
@@ -411,6 +557,35 @@ const styles = StyleSheet.create({
     fontFamily: "monospace",
     marginTop: 2,
   },
+  closeButton: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: "rgba(0,0,0,0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+  },
+  closeButtonText: {
+    fontSize: 16,
+    fontWeight: "700",
+    color: "#64748b",
+  },
+  retryButton: {
+    marginTop: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  retryButtonText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#64748b",
+    textAlign: "center",
+  },
   modeSelector: {
     flexDirection: "row",
     gap: 10,
@@ -419,17 +594,22 @@ const styles = StyleSheet.create({
   },
   modeButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 12,
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 2,
     borderColor: "#e2e8f0",
     backgroundColor: "#f8fafc",
     alignItems: "center",
+    justifyContent: "center",
   },
   modeButtonActive: {
     borderColor: "#C9A84C",
     backgroundColor: "rgba(201,168,76,0.1)",
+  },
+  modeButtonIcon: {
+    fontSize: 16,
+    marginBottom: 4,
   },
   modeButtonText: {
     fontSize: 12,
